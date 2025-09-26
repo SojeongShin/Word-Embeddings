@@ -40,3 +40,5 @@ if inventory:
         gloss = s["gloss"]
         vec = sense_embs[sid]
         print(f" - {sid}: {gloss[:60]}... | shape={vec.shape}")
+
+
