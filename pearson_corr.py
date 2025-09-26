@@ -170,7 +170,7 @@ for epoch in range(num_epochs):
     for w, inv in inventory.items():
         sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_matrix)
 
-    corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=200)
+    corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=999)
     epoch_corrs.append(corr)
 
 # =============================
