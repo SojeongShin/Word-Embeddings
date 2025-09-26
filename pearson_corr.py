@@ -128,9 +128,67 @@ for w, inv in inventory.items():
     init_embs = init_sense_embeddings(inv, dim)
     sense_embs.update(init_embs)
 
-for w, inv in inventory.items():
-    sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_matrix)
 
-print("\n[Training] Completed 1 epoch for all words in SimLex-999")
+# =============================
+# evaluation
+import matplotlib.pyplot as plt
 
-corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=200)
+# =============================
+# 0. Baseline Pearson correlation
+# =============================
+baseline_results = []
+for _, row in simlex.iterrows():
+    w1, w2, gold = row["word1"], row["word2"], row["SimLex999"]
+
+    emb1 = get_base_embedding(w1, tokenizer, embedding_matrix)
+    emb2 = get_base_embedding(w2, tokenizer, embedding_matrix)
+
+    if emb1 is None or emb2 is None:
+        continue
+
+    sim = F.cosine_similarity(emb1.unsqueeze(0), emb2.unsqueeze(0)).item()
+    baseline_results.append((gold, sim))
+
+if baseline_results:
+    gold_scores = [g for g, _ in baseline_results]
+    model_scores = [s for _, s in baseline_results]
+    baseline_corr, _ = pearsonr(model_scores, gold_scores)
+    print(f"[Baseline] Pearson correlation: {baseline_corr:.4f}")
+else:
+    baseline_corr = 0.0
+    print("⚠ Baseline 평가 불가")
+
+# =============================
+# 1. Sense Embedding 학습 곡선
+# =============================
+num_epochs = 10
+epoch_corrs = []
+
+for epoch in range(num_epochs):
+    print(f"\n[Epoch {epoch+1}/{num_epochs}]")
+
+    for w, inv in inventory.items():
+        sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_matrix)
+
+    corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=200)
+    epoch_corrs.append(corr)
+
+# =============================
+# 2. 시각화
+# =============================
+plt.figure(figsize=(8,5))
+
+# 학습 곡선
+plt.plot(range(1, num_epochs+1), epoch_corrs, marker="o", linestyle="-", color="blue", label="Sense Embeddings")
+
+# baseline 수평선
+plt.axhline(y=baseline_corr, color="red", linestyle="--", label=f"Baseline (r={baseline_corr:.3f})")
+
+plt.xlabel("Epoch")
+plt.ylabel("Pearson Correlation (SimLex-999)")
+plt.title("Epoch vs Pearson Correlation on SimLex-999")
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
