@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 from scipy.stats import pearsonr
 import nltk
@@ -6,16 +7,30 @@ from nltk.corpus import wordnet as wn
 from transformers import AutoTokenizer, AutoModel
 import torch
 import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from matplotlib.animation import FuncAnimation, writers
 import csv
 from DeBERTa_wordnet import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
 
 # =============================
 # 0. 준비
 # =============================
+import random
+import numpy as np
+
+seed = 42
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(seed)
+
+
+
 nltk.download("wordnet")
 nltk.download("omw-1.4")
 
-MODEL_NAME = "microsoft/deberta-v3-large"
+MODEL_NAME = "microsoft/deberta-v3-xsmall"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
@@ -27,11 +42,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[Device] Using {device}")
 model.to(device)
 
-# =============================
-# (DeBERTa_wordnet.py에서 가져온 함수들 import)
-# get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
-# 이 함수들은 이미 embedding_layer를 직접 사용하도록 수정되어 있어야 합니다.
-# =============================
 
 # =============================
 # 1. 벤치마크 로드 (SimLex-999)
@@ -85,7 +95,7 @@ def evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=None
             })
 
     if not results:
-        print("⚠ 평가할 수 있는 단어 쌍이 없습니다.")
+        print("평가할 수 있는 단어 쌍이 없습니다.")
         return None
 
     gold_scores = [r["gold_score"] for r in results]
@@ -142,7 +152,7 @@ if baseline_results:
     print(f"[Baseline] Pearson correlation: {baseline_corr:.4f}")
 else:
     baseline_corr = 0.0
-    print("⚠ Baseline 평가 불가")
+    print("Baseline 평가 불가")
 
 # =============================
 # 6. Sense Embedding 학습 루프
@@ -154,12 +164,12 @@ for epoch in range(num_epochs):
     print(f"\n[Epoch {epoch+1}/{num_epochs}]")
     for w, inv in inventory.items():
         sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_layer)
-    corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=999)
+    corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=None)
     epoch_corrs.append(corr)
 
-# =============================
-# 7. 시각화
-# =============================
+# # =============================
+# # 7. 시각화
+# # =============================
 plt.figure(figsize=(8,5))
 plt.plot(range(1, num_epochs+1), epoch_corrs, marker="o", linestyle="-", color="blue", label="Sense Embeddings")
 plt.axhline(y=baseline_corr, color="red", linestyle="--", label=f"Baseline (r={baseline_corr:.3f})")
@@ -169,3 +179,71 @@ plt.title("Epoch vs Pearson Correlation on SimLex-999")
 plt.legend()
 plt.grid(True)
 plt.show()
+
+
+# =============================
+# 동영상 시각화
+# =============================
+def make_sense_evolution_video(words, inventory, sense_embs, tokenizer, embedding_layer,
+                               num_epochs=10, out_video="sense_alignment.mp4"):
+    fig, ax = plt.subplots(figsize=(8,6))
+
+    def update(epoch):
+        ax.clear()
+        ax.set_title(f"Word-Sense Embedding Distribution (Epoch {epoch+1})")
+        all_vecs, labels, colors = [], [], []
+        for w, inv in inventory.items():
+            base = inv["base_embedding"].detach().cpu().numpy()
+            all_vecs.append(base)
+            labels.append(f"{w}_BASE")
+            colors.append("red")
+            for s in inv["senses"]:
+                sid = s["sense_id"]
+                if sid in sense_embs:
+                    v = sense_embs[sid].detach().cpu().numpy()
+                    all_vecs.append(v)
+                    labels.append(f"{w}_{sid}")
+                    colors.append("blue")
+
+        if len(all_vecs) < 2:
+            return
+
+        reduced = PCA(n_components=2).fit_transform(all_vecs)
+
+        for i, label in enumerate(labels):
+            if label.endswith("BASE"):
+                ax.scatter(reduced[i,0], reduced[i,1], marker="*", s=200, c=colors[i])
+            else:
+                ax.scatter(reduced[i,0], reduced[i,1], marker="o", s=50, c=colors[i])
+            ax.text(reduced[i,0]+0.01, reduced[i,1]+0.01, label, fontsize=6)
+        ax.grid(True)
+
+        # 한 epoch 학습
+        for w, inv in inventory.items():
+            train_one_epoch(inv, sense_embs, tokenizer, embedding_layer)
+
+    ani = FuncAnimation(fig, update, frames=num_epochs, interval=1000, repeat=False)
+
+    Writer = writers['ffmpeg']
+    writer = Writer(fps=1, metadata=dict(artist='Me'), bitrate=1800)
+    ani.save(out_video, writer=writer)
+    print(f"[Saved] Video saved to {out_video}")
+
+# =============================
+# 실행 예시
+# =============================
+words_sample = ["bank"]
+
+inventory = {}
+for w in words_sample:
+    inv = build_sense_inventory(w, tokenizer, embedding_layer)
+    if inv:
+        inventory[w] = inv
+
+sense_embs = {}
+for w, inv in inventory.items():
+    sense_embs.update(init_sense_embeddings(inv, dim))
+
+make_sense_evolution_video(words_sample, inventory, sense_embs,
+                           tokenizer, embedding_layer,
+                           num_epochs=10, out_video="sense_alignment.mp4")
