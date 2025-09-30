@@ -1,28 +1,40 @@
 import torch
+from transformers import AutoModel, AutoTokenizer
 from nltk.corpus import wordnet as wn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# # =============================
+# # 0. 모델과 토크나이저 불러오기
+# # =============================
+# model_name = "microsoft/deberta-v3-large"   # BERT/RoBERTa로 바꿔도 가능
+# tokenizer = AutoTokenizer.from_pretrained(model_name)
+# model = AutoModel.from_pretrained(model_name).to(device)
+
+# # embedding layer (연결된 상태)
+# embedding_layer = model.embeddings.word_embeddings  # nn.Embedding
+
 # =============================
 # 1. Base embedding 추출
 # =============================
-def get_base_embedding(word, tokenizer, embedding_matrix):
+def get_base_embedding(word, tokenizer, embedding_layer):
     tokens = tokenizer.tokenize(word)
     if not tokens:
         return None
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
-    sub_embs = embedding_matrix[token_ids, :]
+    token_ids = torch.tensor(token_ids, device=device)
+    sub_embs = embedding_layer(token_ids)  # nn.Embedding forward pass
     return sub_embs.mean(dim=0)  # (hidden_dim,)
 
 # =============================
 # 2. Sense inventory 구축
 # =============================
-def build_sense_inventory(word, tokenizer, embedding_matrix):
+def build_sense_inventory(word, tokenizer, embedding_layer):
     synsets = wn.synsets(word)
     if not synsets:
         return None
 
-    base_emb = get_base_embedding(word, tokenizer, embedding_matrix)
+    base_emb = get_base_embedding(word, tokenizer, embedding_layer)
     if base_emb is None:
         return None
 
@@ -46,21 +58,23 @@ def init_sense_embeddings(inventory, dim):
     sense_embs = {}
     for s in inventory["senses"]:
         sid = s["sense_id"]
-        base_emb = inventory["base_embedding"].to(device)
+        base_emb = inventory["base_embedding"]
         sense_embs[sid] = base_emb + 0.01 * torch.randn(dim, device=device)
     return sense_embs
 
 # =============================
 # 4. 정의문 기반 업데이트 (식 1 단순화)
 # =============================
-def definition_update(sense_id, sense_embs, tokenizer, embedding_matrix, beta=0.3):
+def definition_update(sense_id, sense_embs, tokenizer, embedding_layer, beta=0.3):
     synset = wn.synset(sense_id)
     gloss = synset.definition()
     gloss_tokens = tokenizer.tokenize(gloss)
     if not gloss_tokens:
         return sense_embs[sense_id]
+
     gloss_ids = tokenizer.convert_tokens_to_ids(gloss_tokens)
-    gloss_emb = embedding_matrix[gloss_ids, :].mean(dim=0).to(device)
+    gloss_ids = torch.tensor(gloss_ids, device=device)
+    gloss_emb = embedding_layer(gloss_ids).mean(dim=0)
 
     v_old = sense_embs[sense_id]
     r_j = (1 - beta) * v_old + beta * gloss_emb
@@ -81,15 +95,15 @@ def base_alignment(r_js, base_emb, gamma=0.5):
 # =============================
 # 6. 학습 루프 (1 epoch 예시)
 # =============================
-def train_one_epoch(inventory, sense_embs, tokenizer, embedding_matrix, beta=0.3, gamma=0.5):
-    base_emb = inventory["base_embedding"].to(device)
+def train_one_epoch(inventory, sense_embs, tokenizer, embedding_layer, beta=0.3, gamma=0.5):
+    base_emb = inventory["base_embedding"]
     senses = inventory["senses"]
 
     # 정의문 기반 업데이트
     r_js = []
     for s in senses:
         sid = s["sense_id"]
-        r_j = definition_update(sid, sense_embs, tokenizer, embedding_matrix, beta)
+        r_j = definition_update(sid, sense_embs, tokenizer, embedding_layer, beta)
         r_js.append(r_j)
 
     if not r_js:
