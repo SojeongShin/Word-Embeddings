@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from matplotlib.animation import FuncAnimation, writers
 import csv
-from DeBERTa_wordnet import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
+from DeBERTa_wordnet2 import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
 
 # =============================
 # 0. 준비
@@ -30,7 +30,7 @@ if torch.cuda.is_available():
 nltk.download("wordnet")
 nltk.download("omw-1.4")
 
-MODEL_NAME = "microsoft/deberta-v3-base"
+MODEL_NAME = "microsoft/deberta-v3-xsmall"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
@@ -180,70 +180,3 @@ plt.legend()
 plt.grid(True)
 plt.show()
 
-
-# # =============================
-# # 동영상 시각화
-# # =============================
-# def make_sense_evolution_video(words, inventory, sense_embs, tokenizer, embedding_layer,
-#                                num_epochs=10, out_video="sense_alignment.mp4"):
-#     fig, ax = plt.subplots(figsize=(8,6))
-
-#     def update(epoch):
-#         ax.clear()
-#         ax.set_title(f"Word-Sense Embedding Distribution (Epoch {epoch+1})")
-#         all_vecs, labels, colors = [], [], []
-#         for w, inv in inventory.items():
-#             base = inv["base_embedding"].detach().cpu().numpy()
-#             all_vecs.append(base)
-#             labels.append(f"{w}_BASE")
-#             colors.append("red")
-#             for s in inv["senses"]:
-#                 sid = s["sense_id"]
-#                 if sid in sense_embs:
-#                     v = sense_embs[sid].detach().cpu().numpy()
-#                     all_vecs.append(v)
-#                     labels.append(f"{w}_{sid}")
-#                     colors.append("blue")
-
-#         if len(all_vecs) < 2:
-#             return
-
-#         reduced = PCA(n_components=2).fit_transform(all_vecs)
-
-#         for i, label in enumerate(labels):
-#             if label.endswith("BASE"):
-#                 ax.scatter(reduced[i,0], reduced[i,1], marker="*", s=200, c=colors[i])
-#             else:
-#                 ax.scatter(reduced[i,0], reduced[i,1], marker="o", s=50, c=colors[i])
-#             ax.text(reduced[i,0]+0.01, reduced[i,1]+0.01, label, fontsize=6)
-#         ax.grid(True)
-
-#         # 한 epoch 학습
-#         for w, inv in inventory.items():
-#             train_one_epoch(inv, sense_embs, tokenizer, embedding_layer)
-
-#     ani = FuncAnimation(fig, update, frames=num_epochs, interval=1000, repeat=False)
-
-#     Writer = writers['ffmpeg']
-#     writer = Writer(fps=1, metadata=dict(artist='Me'), bitrate=1800)
-#     ani.save(out_video, writer=writer)
-#     print(f"[Saved] Video saved to {out_video}")
-
-# # =============================
-# # 실행 예시
-# # =============================
-# words_sample = ["bank"]
-
-# inventory = {}
-# for w in words_sample:
-#     inv = build_sense_inventory(w, tokenizer, embedding_layer)
-#     if inv:
-#         inventory[w] = inv
-
-# sense_embs = {}
-# for w, inv in inventory.items():
-#     sense_embs.update(init_sense_embeddings(inv, dim))
-
-# make_sense_evolution_video(words_sample, inventory, sense_embs,
-#                            tokenizer, embedding_layer,
-#                            num_epochs=10, out_video="sense_alignment.mp4")

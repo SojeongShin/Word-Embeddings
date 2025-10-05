@@ -63,7 +63,7 @@ def init_sense_embeddings(inventory, dim):
     return sense_embs
 
 # =============================
-# 4. 정의문 기반 업데이트 (식 1)
+# 4. 정의문 기반 업데이트 (식 1 단순화)
 # =============================
 def definition_update(sense_id, sense_embs, tokenizer, embedding_layer, beta):
     synset = wn.synset(sense_id)
@@ -93,9 +93,9 @@ def base_alignment(r_js, base_emb, gamma):
     return v_js
 
 # =============================
-# 6. 학습 루프 (1 epoch)
+# 6. 학습 루프 (1 epoch 예시)
 # =============================
-def train_one_epoch(inventory, sense_embs, tokenizer, embedding_layer, beta=0.25, gamma=0.75):
+def train_one_epoch(inventory, sense_embs, tokenizer, embedding_layer, beta=0.3, gamma=0.7):
     base_emb = inventory["base_embedding"]
     senses = inventory["senses"]
 
