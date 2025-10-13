@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from matplotlib.animation import FuncAnimation, writers
 import csv
-from DeBERTa_wordnet import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
+from DeBERTa_wordnet_transformer import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
 
 # =============================
 # 0. 준비
@@ -34,14 +34,11 @@ MODEL_NAME = "microsoft/deberta-v3-base"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
 
-# embedding layer (연결된 상태)
-embedding_layer = model.embeddings.word_embeddings
-dim = embedding_layer.embedding_dim
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[Device] Using {device}")
 model.to(device)
-
+model.eval()
 
 # =============================
 # 1. 벤치마크 로드 (SimLex-999)
@@ -120,14 +117,23 @@ all_words = set(simlex["word1"]).union(set(simlex["word2"]))
 
 inventory = {}
 for w in all_words:
-    inv = build_sense_inventory(w, tokenizer, embedding_layer)
+    inv = build_sense_inventory(w, tokenizer, model, device)
     if inv:
         inventory[w] = inv
 
+
 sense_embs = {}
 for w, inv in inventory.items():
-    init_embs = init_sense_embeddings(inv, dim)
+    init_embs = init_sense_embeddings(
+        inv, tokenizer, model, device,
+        use_examples=False,     # gloss만 사용 (원하면 True)
+        include_lemmas=False,   # lemma도 섞고 싶으면 True
+        include_hypernyms=False,# 상위개념 정의까지 넣고 싶으면 True
+        alpha=0.0,              # base 앵커링 비율(0=순수 gloss)
+        normalize=True          # L2 정규화
+    )
     sense_embs.update(init_embs)
+
 
 # =============================
 # 5. Baseline Pearson correlation
@@ -136,8 +142,8 @@ baseline_results = []
 for _, row in simlex.iterrows():
     w1, w2, gold = row["word1"], row["word2"], row["SimLex999"]
 
-    emb1 = get_base_embedding(w1, tokenizer, embedding_layer)
-    emb2 = get_base_embedding(w2, tokenizer, embedding_layer)
+    emb1 = get_base_embedding(w1, tokenizer, model, device)
+    emb2 = get_base_embedding(w2, tokenizer, model, device)
 
     if emb1 is None or emb2 is None:
         continue
@@ -163,7 +169,11 @@ epoch_corrs = []
 for epoch in range(num_epochs):
     print(f"\n[Epoch {epoch+1}/{num_epochs}]")
     for w, inv in inventory.items():
-        sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_layer)
+        sense_embs = train_one_epoch(
+            inv, sense_embs, tokenizer, model, device, 
+            beta=0.25,   # gloss 반영 정도
+            gamma=0.7    # base 정렬 정도
+        )
     corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=None)
     epoch_corrs.append(corr)
 
@@ -174,8 +184,8 @@ plt.figure(figsize=(8,5))
 plt.plot(range(1, num_epochs+1), epoch_corrs, marker="o", linestyle="-", color="blue", label="Sense Embeddings")
 plt.axhline(y=baseline_corr, color="red", linestyle="--", label=f"Baseline (r={baseline_corr:.3f})")
 plt.xlabel("Epoch")
-plt.ylabel("Pearson Correlation (SimLex-999)")
-plt.title("Epoch vs Pearson Correlation on SimLex-999")
+plt.ylabel("Pearson Correlation")
+plt.title("Pearson Correlation on SimLex-999 (encoder-based sense init)")
 plt.legend()
 plt.grid(True)
 plt.show()
