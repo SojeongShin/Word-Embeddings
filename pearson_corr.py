@@ -10,13 +10,20 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from matplotlib.animation import FuncAnimation, writers
 import csv
-from DeBERTa_wordnet_transformer import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
+from DeBERTa_wn_mid import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
 
 # =============================
 # 0. 준비
 # =============================
 import random
 import numpy as np
+
+import time
+start_time = time.time()  # 실행 시작 시각
+
+OUTPUT_DIR = os.path.join("results/transformer-results/base-0.25-0.7/len64", "mid1234")  # 결과 저장 디렉토리
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 seed = 42
 torch.manual_seed(seed)
@@ -166,7 +173,18 @@ else:
 num_epochs = 30
 epoch_corrs = []
 
+# Early Stopping 설정
+patience = 3         # 연속 3번 개선 없으면 중단
+min_delta = 1e-4     # 최소 개선폭(피어슨 증가량)
+best_corr = -float("inf")
+no_improve = 0
+early_stop = False   # 플래그
+
 for epoch in range(num_epochs):
+    if early_stop:
+        print(f"[EarlyStop] Triggered early stop at epoch {epoch}.")
+        break
+
     print(f"\n[Epoch {epoch+1}/{num_epochs}]")
     for w, inv in inventory.items():
         sense_embs = train_one_epoch(
@@ -174,21 +192,69 @@ for epoch in range(num_epochs):
             beta=0.25,   # gloss 반영 정도
             gamma=0.7    # base 정렬 정도
         )
+    
     corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=None)
     epoch_corrs.append(corr)
 
-# # =============================
-# # 7. 시각화
-# # =============================
+    # Early Stopping 로직
+    if corr is None:
+        current = -float("inf")
+    else:
+        current = corr
+
+    if current - best_corr > min_delta:
+        best_corr = current
+        no_improve = 0
+        print(f"[EarlyStop] Improvement detected. best_corr={best_corr:.6f}")
+    else:
+        no_improve += 1
+        print(f"[EarlyStop] No significant improvement ({no_improve}/{patience}).")
+
+        if no_improve >= patience:
+            print(f"[EarlyStop] Stop criterion met (no improvement > {min_delta} for {patience} epochs).")
+            early_stop = True  # early stop 플래그
+
+# =============================
+# 7. 시각화 및 저장 (early stop 대응)
+# =============================
+import time
+
+end_time = time.time()
+elapsed = end_time - start_time
+
+# x축은 실제 수집된 성능 길이에 맞추기
+x_epochs = list(range(1, len(epoch_corrs) + 1))
+
 plt.figure(figsize=(8,5))
-plt.plot(range(1, num_epochs+1), epoch_corrs, marker="o", linestyle="-", color="blue", label="Sense Embeddings")
-plt.axhline(y=baseline_corr, color="red", linestyle="--", label=f"Baseline (r={baseline_corr:.3f})")
+plt.plot(x_epochs, epoch_corrs, marker="o", linestyle="-", label="Sense Embeddings")
+
+# baseline이 있을 때만 표시
+if baseline_results:
+    plt.axhline(y=baseline_corr, color="red", linestyle="--",
+                label=f"Baseline (r={baseline_corr:.3f})")
+
+# 조기 종료 시점 수직선(선택)
+if len(epoch_corrs) < num_epochs:
+    plt.axvline(x=len(epoch_corrs), linestyle=":", color="gray",
+                label=f"Early stop @ {len(epoch_corrs)}")
+
 plt.xlabel("Epoch")
 plt.ylabel("Pearson Correlation")
-plt.title("Pearson Correlation on SimLex-999 (encoder-based sense init)")
+final_r = epoch_corrs[-1] if epoch_corrs else float("nan")
+plt.title(f"Pearson Correlation on SimLex-999 (final r={final_r:.3f}, epochs={len(epoch_corrs)})")
 plt.legend()
 plt.grid(True)
-plt.show()
+
+# 저장 경로 (기존 OUTPUT_DIR 사용)
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+fig_path = os.path.join(OUTPUT_DIR, f"simlex_corr_{MODEL_NAME.replace('/','_')}_{timestamp}.png")
+plt.savefig(fig_path, dpi=200, bbox_inches="tight")
+print(f"[Saved] Figure saved to: {fig_path}")
+
+# 전체 경과 시간 출력
+h = int(elapsed // 3600); m = int((elapsed % 3600) // 60); s = int(elapsed % 60)
+print(f"[Time] Total elapsed: {h:02d}:{m:02d}:{s:02d} ({elapsed:.2f}s)")
+
 
 
 # # =============================

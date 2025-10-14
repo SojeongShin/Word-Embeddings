@@ -3,8 +3,8 @@ from transformers import AutoModel, AutoTokenizer
 from nltk.corpus import wordnet as wn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-POOL_LAYERS = (1, 2, 3, 4)
-MAX_LEN = 64
+POOL_LAYERS = (4, 5, 6, 7)
+MAX_LEN = 128
 AGG = "mean"
 EXCLUDE_SPECIAL = True
 
