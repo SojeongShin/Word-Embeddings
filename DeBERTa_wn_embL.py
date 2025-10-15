@@ -17,7 +17,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # =============================
 # 1. Base embedding 추출
 # =============================
-def get_base_embedding(word, tokenizer, embedding_layer):
+def get_base_embedding(word, tokenizer, embedding_layer, normalize=True):
     tokens = tokenizer.tokenize(word)
     if not tokens:
         return None
@@ -25,8 +25,12 @@ def get_base_embedding(word, tokenizer, embedding_layer):
     token_ids = tokenizer.convert_tokens_to_ids(tokens)
     token_ids = torch.tensor(token_ids, device=device)
     sub_embs = embedding_layer(token_ids)  # nn.Embedding forward pass
-    
-    return sub_embs.mean(dim=0)  # (hidden_dim,)
+
+    emb = sub_embs.mean(dim=0)
+
+    if normalize:
+        emb = emb / (emb.norm(p=2) + 1e-12)
+    return emb
 
 # =============================
 # 2. Sense inventory 구축
@@ -43,9 +47,7 @@ def build_sense_inventory(word, tokenizer, embedding_layer):
     senses = []
     for s in synsets:
         senses.append({
-            "sense_id": s.name(),
-            "pos": s.pos(),
-            "gloss": s.definition(),
+            "sense_id": s.name(), "pos": s.pos(), "gloss": s.definition(),
         })
 
     return {
