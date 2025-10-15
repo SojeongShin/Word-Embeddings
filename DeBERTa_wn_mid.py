@@ -43,6 +43,10 @@ def get_base_embedding(word, tokenizer, model, device, agg=AGG, layers=POOL_LAYE
     special_ids = {tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id}
     mask = torch.tensor([tid not in special_ids for tid in input_ids], device=device)
 
+    used_tokens = int(mask.sum().item())
+    TOTAL_TOKEN_COUNT += used_tokens
+    print(f"[Token Count] '{word}' uses {used_tokens} tokens.")
+
     if mask.sum() > 0:
         v = stacked[0][mask].mean(dim=0)
     else:
