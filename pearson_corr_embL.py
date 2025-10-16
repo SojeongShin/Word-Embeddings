@@ -10,13 +10,20 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from matplotlib.animation import FuncAnimation, writers
 import csv
-from DeBERTa_wn_embL import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
+from DeBERTa_wn_baseinit import get_base_embedding, build_sense_inventory, init_sense_embeddings, train_one_epoch
 
 # =============================
 # 0. 준비
 # =============================
 import random
 import numpy as np
+
+import time
+start_time = time.time()  # 실행 시작 시각
+
+OUTPUT_DIR = os.path.join("results/embedding-layer/b=0.25_g=0.7/len64", "noise_base_init")  # 결과 저장 디렉토리
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
 
 seed = 42
 torch.manual_seed(seed)
@@ -33,15 +40,15 @@ nltk.download("omw-1.4")
 MODEL_NAME = "microsoft/deberta-v3-base"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModel.from_pretrained(MODEL_NAME)
+dim = model.config.hidden_size
+embedding_layer=model.embeddings.word_embeddings
+print(f"[Model] Loaded {MODEL_NAME} with hidden size {dim}")
 
-# embedding layer (연결된 상태)
-embedding_layer = model.embeddings.word_embeddings
-dim = embedding_layer.embedding_dim
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[Device] Using {device}")
 model.to(device)
-
+model.eval()
 
 # =============================
 # 1. 벤치마크 로드 (SimLex-999)
@@ -117,22 +124,11 @@ for w in all_words:
     if inv:
         inventory[w] = inv
 
+
 sense_embs = {}
 for w, inv in inventory.items():
-    init_embs = init_sense_embeddings(
-        inv,               # inventory
-        tokenizer,
-        embedding_layer,
-        device,
-        # 필요 시 조절
-        use_examples=False,
-        include_lemmas=False,
-        include_hypernyms=False,
-        alpha=0.0,
-        normalize=True     # L2 정규화
-    )
+    init_embs = init_sense_embeddings(inv, dim)
     sense_embs.update(init_embs)
-
 
 # =============================
 # 5. Baseline Pearson correlation
@@ -165,32 +161,87 @@ else:
 num_epochs = 30
 epoch_corrs = []
 
+# Early Stopping 설정
+patience = 3        
+min_delta = 1e-4     # 최소 개선폭
+best_corr = -float("inf")
+no_improve = 0
+early_stop = False   # 플래그
+
 for epoch in range(num_epochs):
+    if early_stop:
+        print(f"[EarlyStop] Triggered early stop at epoch {epoch}.")
+        break
+
     print(f"\n[Epoch {epoch+1}/{num_epochs}]")
     for w, inv in inventory.items():
-        sense_embs = train_one_epoch(inv, sense_embs, tokenizer, embedding_layer)
+        sense_embs = train_one_epoch(
+            inv, sense_embs, tokenizer, embedding_layer, 
+            beta=0.25,   # gloss 반영 정도
+            gamma=0.7    # base 정렬 정도
+        )
+    
     corr = evaluate_simlex(sense_embs, inventory, path="SimLex-999.txt", max_pairs=None)
     epoch_corrs.append(corr)
 
-# =============================
-# 7. 시각화 및 저장
-# =============================
-import os
+    # Early Stopping 로직
+    if corr is None:
+        current = -float("inf")
+    else:
+        current = corr
 
-SAVE_DIR = "results/embedding-layer/b=0.25_g=0.7"  # 저장할 폴더 경로
-os.makedirs(SAVE_DIR, exist_ok=True)
+    if current - best_corr > min_delta:
+        best_corr = current
+        no_improve = 0
+        print(f"[EarlyStop] Improvement detected. best_corr={best_corr:.6f}")
+    else:
+        no_improve += 1
+        print(f"[EarlyStop] No significant improvement ({no_improve}/{patience}).")
 
-save_path = os.path.join(SAVE_DIR, "gloss_init_simlex.png")
+        if no_improve >= patience:
+            print(f"[EarlyStop] Stop criterion met (no improvement > {min_delta} for {patience} epochs).")
+            early_stop = True  # early stop 플래그
+
+# =============================
+# 7. 시각화 및 저장 (early stop 대응)
+# =============================
+import time
+
+end_time = time.time()
+elapsed = end_time - start_time
+
+# x축은 실제 수집된 성능 길이에 맞추기
+x_epochs = list(range(1, len(epoch_corrs) + 1))
 
 plt.figure(figsize=(8,5))
-plt.plot(range(1, num_epochs+1), epoch_corrs, marker="o", linestyle="-", color="blue", label="Sense Embeddings")
-plt.axhline(y=baseline_corr, color="red", linestyle="--", label=f"Baseline (r={baseline_corr:.3f})")
+plt.plot(x_epochs, epoch_corrs, marker="o", linestyle="-", label="Sense Embeddings")
+
+# baseline이 있을 때만 표시
+if baseline_results:
+    plt.axhline(y=baseline_corr, color="red", linestyle="--",
+                label=f"Baseline (r={baseline_corr:.3f})")
+
+# 조기 종료 시점 수직선(선택)
+if len(epoch_corrs) < num_epochs:
+    plt.axvline(x=len(epoch_corrs), linestyle=":", color="gray",
+                label=f"Early stop @ {len(epoch_corrs)}")
+
 plt.xlabel("Epoch")
-plt.ylabel("Pearson Correlation (SimLex-999)")
-plt.title("Epoch vs Pearson Correlation on SimLex-999")
+plt.ylabel("Pearson Correlation")
+final_r = epoch_corrs[-1] if epoch_corrs else float("nan")
+plt.title(f"Pearson Correlation on SimLex-999 (final r={final_r:.3f}, epochs={len(epoch_corrs)})")
 plt.legend()
 plt.grid(True)
 
-plt.tight_layout()
-plt.savefig(save_path, dpi=300)  
-print(f"[Saved Plot] {save_path}")
+# 저장 경로 (기존 OUTPUT_DIR 사용)
+timestamp = time.strftime("%Y%m%d-%H%M%S")
+fig_path = os.path.join(OUTPUT_DIR, f"simlex_corr_{MODEL_NAME.replace('/','_')}_{timestamp}.png")
+plt.savefig(fig_path, dpi=200, bbox_inches="tight")
+print(f"[Saved] Figure saved to: {fig_path}")
+
+# 전체 경과 시간 출력
+h = int(elapsed // 3600); m = int((elapsed % 3600) // 60); s = int(elapsed % 60)
+print(f"[Time] Total elapsed: {h:02d}:{m:02d}:{s:02d} ({elapsed:.2f}s)")
+
+from DeBERTa_wn_mid import TOTAL_TOKEN_COUNT
+print(f"\n[Summary] Total tokens processed during initialization + training: {TOTAL_TOKEN_COUNT}")
