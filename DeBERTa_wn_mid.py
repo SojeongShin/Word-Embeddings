@@ -3,10 +3,11 @@ from transformers import AutoModel, AutoTokenizer
 from nltk.corpus import wordnet as wn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-POOL_LAYERS = (1, 2, 3, 4)
+POOL_LAYERS = (9, 10, 11, 12)
 MAX_LEN = 64
 AGG = "mean"
 EXCLUDE_SPECIAL = True
+TOTAL_TOKEN_COUNT = 0
 
 # # =============================
 # # 0. 모델과 토크나이저 불러오기
@@ -22,7 +23,7 @@ EXCLUDE_SPECIAL = True
 # 1. Base embedding 추출 (mid 4 layers 평균, 특수토큰 제외)
 # =============================
 def get_base_embedding(word, tokenizer, model, device, agg=AGG, layers=POOL_LAYERS):
-
+    global TOTAL_TOKEN_COUNT
     model.eval()
     inputs = tokenizer(
         word, return_tensors="pt",
@@ -45,7 +46,7 @@ def get_base_embedding(word, tokenizer, model, device, agg=AGG, layers=POOL_LAYE
 
     used_tokens = int(mask.sum().item())
     TOTAL_TOKEN_COUNT += used_tokens
-    print(f"[Token Count] '{word}' uses {used_tokens} tokens.")
+    # print(f"[Token Count] '{word}' uses {used_tokens} tokens.")
 
     if mask.sum() > 0:
         v = stacked[0][mask].mean(dim=0)
@@ -73,6 +74,8 @@ def build_sense_inventory(word, tokenizer, model, device):
 
 
 def text_to_emb(text, tokenizer, model, device, agg=AGG, layers=POOL_LAYERS):
+    global TOTAL_TOKEN_COUNT
+
     model.eval()
     inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=MAX_LEN).to(device)
     with torch.no_grad():
@@ -93,6 +96,11 @@ def text_to_emb(text, tokenizer, model, device, agg=AGG, layers=POOL_LAYERS):
         v = stacked.mean(dim=1)[0] if agg == AGG else stacked[:, 0, :].squeeze(0)
 
     v = v / (v.norm(p=2) + 1e-12)
+
+    used_tokens = int(mask.sum().item())
+    TOTAL_TOKEN_COUNT += used_tokens
+    # print(f"[Token Count] text '{text[:20]}...' uses {used_tokens} tokens.")
+
     return v
 
 
@@ -143,9 +151,11 @@ def definition_update(sense_id, sense_embs, tokenizer, model, device, beta):
         return sense_embs[sense_id]
     
     v_old = sense_embs[sense_id]
+    v_old = sense_embs[sense_id]
+    v_new = (1 - beta) * v_old + beta * gloss_emb
+    v_new = v_new / (v_new.norm(p=2) + 1e-12) 
     
-    return (1 - beta) * v_old + beta * gloss_emb
-
+    return v_new
 
 # =============================
 # 5. Base alignment (식 4)

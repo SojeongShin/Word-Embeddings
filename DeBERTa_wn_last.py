@@ -17,7 +17,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # =============================
 # 1. Base embedding 추출 (last 4 layers 평균, 특수토큰 제외)
 # =============================
-def get_base_embedding(word, tokenizer, model, device, max_length=16):
+def get_base_embedding(word, tokenizer, model, device, max_length=64):
     model.eval()
     inputs = tokenizer(word, return_tensors="pt", truncation=True, max_length=max_length).to(device)
     with torch.no_grad():
@@ -27,7 +27,7 @@ def get_base_embedding(word, tokenizer, model, device, max_length=16):
     specials = {tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id}
     mask = torch.tensor([tid not in specials for tid in ids], device=device)
     v = last4[0][mask].mean(dim=0) if mask.any() else last4.mean(dim=1)[0]
-    v = v / (v.norm(p=2) + 1e-12)
+    v = v / (v.norm(p=2) + 1e-12) # L2 정규화
     return v
 
 
@@ -46,7 +46,7 @@ def build_sense_inventory(word, tokenizer, model, device):
 
 
 
-def text_to_emb(text, tokenizer, model, device, max_length=128):
+def text_to_emb(text, tokenizer, model, device, max_length=64):
     model.eval()
     inputs = tokenizer(
         text, return_tensors="pt", truncation=True, max_length=max_length, add_special_tokens=True

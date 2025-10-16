@@ -21,7 +21,7 @@ import numpy as np
 import time
 start_time = time.time()  # 실행 시작 시각
 
-OUTPUT_DIR = os.path.join("results/transformer-results/base-0.25-0.7/len64", "mid1234")  # 결과 저장 디렉토리
+OUTPUT_DIR = os.path.join("results/transformer-results/base-0.25-0.7/len64", "last4")  # 결과 저장 디렉토리
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
@@ -133,11 +133,11 @@ sense_embs = {}
 for w, inv in inventory.items():
     init_embs = init_sense_embeddings(
         inv, tokenizer, model, device,
-        use_examples=False,     # gloss만 사용 (원하면 True)
-        include_lemmas=False,   # lemma도 섞고 싶으면 True
-        include_hypernyms=False,# 상위개념 정의까지 넣고 싶으면 True
-        alpha=0.0,              # base 앵커링 비율(0=순수 gloss)
-        normalize=True          # L2 정규화
+        use_examples=False,
+        include_lemmas=False,
+        include_hypernyms=False,
+        alpha=0.0,
+        normalize=True
     )
     sense_embs.update(init_embs)
 
@@ -255,6 +255,8 @@ print(f"[Saved] Figure saved to: {fig_path}")
 h = int(elapsed // 3600); m = int((elapsed % 3600) // 60); s = int(elapsed % 60)
 print(f"[Time] Total elapsed: {h:02d}:{m:02d}:{s:02d} ({elapsed:.2f}s)")
 
+from DeBERTa_wn_mid import TOTAL_TOKEN_COUNT
+print(f"\n[Summary] Total tokens processed during initialization + training: {TOTAL_TOKEN_COUNT}")
 
 
 # # =============================
