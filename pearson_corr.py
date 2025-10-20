@@ -21,7 +21,7 @@ import numpy as np
 import time
 start_time = time.time()  # 실행 시작 시각
 
-OUTPUT_DIR = os.path.join("results/transformer-results/base-0.25-0.7/len64", "last4")  # 결과 저장 디렉토리
+OUTPUT_DIR = os.path.join("results/transformer-results/base-0.25-0.7/len64", "last12")  # 결과 저장 디렉토리
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 

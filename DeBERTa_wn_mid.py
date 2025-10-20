@@ -3,7 +3,13 @@ from transformers import AutoModel, AutoTokenizer
 from nltk.corpus import wordnet as wn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-POOL_LAYERS = (9, 10, 11, 12)
+MODEL_NAME = "microsoft/deberta-v3-base"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModel.from_pretrained(MODEL_NAME)
+num_layers = model.config.num_hidden_layers  # 예: 12
+POOL_LAYERS = tuple(range(num_layers - 11, num_layers + 1))  # 마지막 10개
+print(POOL_LAYERS) 
+
 MAX_LEN = 64
 AGG = "mean"
 EXCLUDE_SPECIAL = True
