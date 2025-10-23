@@ -48,13 +48,17 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
 from transformers import (AutoModel, AutoTokenizer, get_linear_schedule_with_warmup,
                           PreTrainedTokenizerBase, DataCollatorWithPadding, set_seed)
-from transformers.optimization import AdamW
+from torch.optim import AdamW
 
 import nltk
 from nltk.corpus import wordnet as wn
+
+import csv
+import matplotlib.pyplot as plt
+
 
 # -----------------------------
 # Global accounting / utilities
@@ -82,6 +86,7 @@ def pooled_final_mean(hidden_states: Tuple[torch.Tensor, ...],
     Returns (B, H).
     """
     final = hidden_states[-1]  # (B, L, H) — output after all 12 layers
+    # print(f"[DEBUG] final hidden_states shape: {final.shape}")
     special_ids = {tokenizer.cls_token_id, tokenizer.sep_token_id, tokenizer.pad_token_id}
 
     # build mask (B, L)
@@ -183,7 +188,7 @@ def definition_update(sense_id: str,
                      tokenizer,
                      model,
                      device,
-                     beta: float = 0.3,
+                     beta: float = 0.25,
                      max_length: int = 128) -> torch.Tensor:
     gloss = wn.synset(sense_id).definition()
     gloss_vec = get_base_emb_for_text(gloss, tokenizer, model, device, max_length)
@@ -205,8 +210,8 @@ def build_sense_index(vocab: List[str],
                       model,
                       device,
                       alpha: float = 0.0,
-                      beta: float = 0.3,
-                      gamma: float = 0.5,
+                      beta: float = 0.25,
+                      gamma: float = 0.7,
                       use_examples: bool = False,
                       include_lemmas: bool = False,
                       include_hypernyms: bool = False,
@@ -270,8 +275,8 @@ class SenseMixSequenceClassifier(nn.Module):
         self.lambda_res = float(lambda_res)
         self.sense_index = sense_index or {}
 
-    def forward(self, input_ids=None, attention_mask=None, labels=None, raw_text=None):
-        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+    def forward(self, input_ids=None, attention_mask=None, token_type_ids=None, labels=None, raw_text=None):
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids, output_hidden_states=True)
         sent_vec = pooled_final_mean(out.hidden_states, input_ids, self.tokenizer)
 
         # Optional: add residual per sample using raw_text
@@ -370,6 +375,19 @@ def train_and_eval(args):
     ds = make_datasets(args.task_name, tokenizer, args.max_length)
     key1, key2, num_labels = GLUE_KEYS[args.task_name]
 
+    # CSV logging
+    os.makedirs(args.output_dir, exist_ok=True)
+    csv_path = os.path.join(args.output_dir, "train_log.csv")
+    # CSV 헤더 생성
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        # 회귀(1)와 분류(>1)를 모두 커버: acc는 회귀면 빈칸으로 두기
+        writer.writerow(["epoch", "step", "global_step", "loss", "lr", "train_acc_or_mse"])
+
+    # 곡선 그리기용 메모리 버퍼
+    curve_steps, curve_losses, curve_metrics = [], [], []  # metric은 분류=acc, 회귀=mse
+
+
     # Sense index (optional)
     sense_index = {}
     if args.sense_enable:
@@ -425,6 +443,7 @@ def train_and_eval(args):
     if args.do_train:
         model.train()
         step = 0
+        global_step = 0  # <-- 추가
         for epoch in range(args.num_train_epochs):
             for batch in train_loader:
                 batch = {k:(v.to(device) if torch.is_tensor(v) else v) for k,v in batch.items()}
@@ -436,9 +455,45 @@ def train_and_eval(args):
                 if scheduler is not None:
                     scheduler.step()
                 optimizer.zero_grad()
+
                 step += 1
-                if step % args.logging_steps == 0:
-                    print(f"epoch {epoch+1} step {step} loss {loss.item():.4f}")
+                global_step += 1  # <-- 추가
+
+                # ----- 배치 metric 계산 (분류: accuracy, 회귀: mse) -----
+                with torch.no_grad():
+                    logits = out["logits"].detach()
+                    if num_labels == 1:
+                        # STS-B 회귀: 배치 MSE
+                        # batch["labels"]는 CPU에 있을 수 있음 -> 디바이스 맞추기
+                        labels_t = batch["labels"].to(logits.device).view(-1).float()
+                        preds = logits.view(-1).float()
+                        batch_metric = F.mse_loss(preds, labels_t).item()
+                    else:
+                        # 분류: 배치 정확도
+                        labels_t = batch["labels"].to(logits.device).view(-1).long()
+                        preds = logits.argmax(dim=-1).view(-1)
+                        correct = (preds == labels_t).sum().item()
+                        total = labels_t.numel()
+                        batch_metric = correct / max(total, 1)
+
+                # 현재 학습률
+                lr_now = optimizer.param_groups[0]["lr"]
+
+                # 로그 메모리에 누적 (그래프용)
+                curve_steps.append(global_step)
+                curve_losses.append(float(loss.item()))
+                curve_metrics.append(float(batch_metric))
+
+                # CSV에 기록
+                if (step % args.logging_steps) == 0:
+                    with open(csv_path, "a", newline="") as f:
+                        writer = csv.writer(f)
+                        writer.writerow([epoch+1, step, global_step, float(loss.item()), lr_now, float(batch_metric)])
+
+                    # 콘솔 출력(분류는 acc, 회귀는 mse 라벨링)
+                    metric_name = "acc" if num_labels > 1 else "mse"
+                    print(f"epoch {epoch+1} step {step} loss {loss.item():.4f} {metric_name} {batch_metric:.4f} lr {lr_now:.6f}")
+
         # Save
         os.makedirs(args.output_dir, exist_ok=True)
         torch.save(model.state_dict(), os.path.join(args.output_dir, "pytorch_model.bin"))
@@ -469,6 +524,33 @@ def train_and_eval(args):
             acc = accuracy_score(labels, preds)
             print(f"[EVAL] Accuracy: {acc:.4f}")
 
+
+        # --- 학습 곡선 저장 ---
+        try:
+            # 손실 곡선
+            plt.figure()
+            plt.plot(curve_steps, curve_losses)
+            plt.xlabel("Global Step")
+            plt.ylabel("Loss")
+            plt.title("Training Loss vs Step")
+            plt.tight_layout()
+            plt.savefig(os.path.join(args.output_dir, "learning_curve_loss.png"), dpi=150)
+            plt.close()
+
+            # Metric 곡선 (분류: acc, 회귀: mse)
+            plt.figure()
+            plt.plot(curve_steps, curve_metrics)
+            plt.xlabel("Global Step")
+            plt.ylabel("Accuracy" if num_labels > 1 else "MSE")
+            plt.title("Training " + ("Accuracy" if num_labels > 1 else "MSE") + " vs Step")
+            plt.tight_layout()
+            plt.savefig(os.path.join(args.output_dir, "learning_curve_metric.png"), dpi=150)
+            plt.close()
+
+            print(f"[INFO] Curves saved to {args.output_dir}/learning_curve_loss.png and learning_curve_metric.png")
+        except Exception as e:
+            print(f"[WARN] Failed to save curves: {e}")
+
     # Report token usage
     print(f"[STATS] TOTAL_TOKEN_COUNT (non-special across forward passes): {TOTAL_TOKEN_COUNT}")
 
@@ -476,13 +558,13 @@ def train_and_eval(args):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--task_name", type=str, required=True, choices=list(GLUE_KEYS.keys()))
-    p.add_argument("--model_name", type=str, default="microsoft/deberta-v3-base")
+    p.add_argument("--model_name", type=str, default="microsoft/deberta-v3-xsmall")
     p.add_argument("--output_dir", type=str, default="runs/tmp")
     p.add_argument("--max_length", type=int, default=128)
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--learning_rate", type=float, default=2e-5)
     p.add_argument("--weight_decay", type=float, default=0.01)
-    p.add_argument("--num_train_epochs", type=int, default=3)
+    p.add_argument("--num_train_epochs", type=int, default=4)
     p.add_argument("--warmup_ratio", type=float, default=0.06)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--logging_steps", type=int, default=100)
@@ -491,8 +573,8 @@ def parse_args():
     p.add_argument("--sense_enable", action="store_true")
     p.add_argument("--lambda_res", type=float, default=0.2)
     p.add_argument("--alpha", type=float, default=0.0)
-    p.add_argument("--beta", type=float, default=0.3)
-    p.add_argument("--gamma", type=float, default=0.5)
+    p.add_argument("--beta", type=float, default=0.25)
+    p.add_argument("--gamma", type=float, default=0.7)
     p.add_argument("--use_examples", action="store_true")
     p.add_argument("--include_lemmas", action="store_true")
     p.add_argument("--include_hypernyms", action="store_true")
